@@ -33,6 +33,7 @@ module LSH
 ##
 
 using DataStructures
+using ProgressMeter
 import DataStructures:  MultiHashDict, AbstractHashDict, HashDict, Unordered, Ordered
 
 
@@ -59,10 +60,17 @@ function PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(
         𝒫::Vector{T𝒫},::Type{V},groupF::GroupingF,::Type{RH},hash::HashF,derive::DeriveF,::Type{DK})
     g = PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(
         groupF,𝒫,MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}(hash,derive))
-    for item = 1:length(𝒫)
-        DataStructures._push!(g,g.dict,g.group(g.𝒫[item])=>V(item))
-    end
+    sizehint(g.dict,length(𝒫))
     g
+end
+
+function push!{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(g::PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}, 
+        item_no, p=nothing)
+    if is(p,nothing)
+        DataStructures._push!(g,g.dict,g.group(g.𝒫[item_no])=>V(item_no))
+    else
+        DataStructures._push!(g,g.dict,g.group(p)=>V(item_no))
+    end
 end
 
 rehash(g::PointGroupingSet, sz) = DataStructures._rehash(g,g.dict,sz)
@@ -104,7 +112,7 @@ function call{RT}(T::ModPHash{RT},z::Vector{Int32})
     check_length(T,length(z))
     result::Uint32 = Uint32(0)
     for i in 1:length(z)
-        r = z[i]*UInt32(T.r[i])
+        r = z[i]*Int64(T.r[i])
         result = ((result + (r % P)) % P) % Uint32
     end
     result % RT
@@ -129,11 +137,17 @@ end
 
 # Given a vector of hashes and a dataset, construct an LSHTable
 function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, 𝒫::Vector{T𝒫},
-        ::Type{RH}, ::Type{DK})
+        ::Type{RH}, ::Type{DK}; progress = false)
+
+    if progress
+        p = Progress(length(𝒫), 1)
+    end
+
+    @show typeof(𝒫)
 
     # Set up the tables.
     tables = [
-        PointGroupingSet(
+        (pgs = PointGroupingSet(
             𝒫,
             Int32,
             h,
@@ -141,18 +155,28 @@ function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, 𝒫::Vector{T�
             ModPHash{Uint32}(rand(Uint32,dimension(h))), # t_1 in [AM04]
             ModPHash{DK}(rand(Uint32,dimension(h))), # t_2 in [AM04]
             DK
-        )
+        ); pgs)
         for h in hashes ]
 
-    @show typeof(tables)
-
     T = LSHTable(R,𝒫,tables)
+
+    for (i,point) in enumerate(𝒫)
+        push!(T,i,point)
+        progress && next!(p)
+    end
 
     T
 end
 
-function LSHTable{H,T𝒫}(R::Float64,hashes::Vector{H}, datapoints::Vector{T𝒫})
-    LSHTable(R,hashes,datapoints,RH(H),Uint32)
+function push!(T::LSHTable,i,v)
+    v = precompute(T.tables[1].group,v)
+    for t in T.tables
+        push!(t,i,v)
+    end
+end
+
+function LSHTable{H,T𝒫}(R::Float64,hashes::Vector{H}, datapoints::Vector{T𝒫}; progress = false)
+    LSHTable(R,hashes,datapoints,RH(H),Uint32; progress=progress)
 end
 
 using Distances
@@ -161,8 +185,9 @@ function getindex{H,RH,DK,V,T𝒫,HashP,DeriveP}(
         T::LSHTable{H,RH,DK,V,T𝒫,HashP,DeriveP},q::T𝒫)
     results = ObjectIdDict()
     tried = falses(length(T.𝒫))
+    qp = precompute(T.tables[1].group,q)
     for table in T.tables
-        for p in table[q]
+        for p in table[qp]
             if !tried[p]
                 point = T.𝒫[p]
                 if (euclidean(point,q) <= T.R)
@@ -223,6 +248,49 @@ call(c::HashCollection,v) = [ h(v) for h in c.hs ]
 function createHashesAM04(d,w,k,L,R)
     family = AM04HashFamily(d,w,R)
     [ HashCollection{AM04Hash}([rand(family) for _ = 1:k]) for _ = 1:L ]
+end
+
+# The hashing scheme define in section 3.4.1 of the E2LSH manual
+
+immutable CompositeHashCollection{H}
+    first::Uint8
+    second::Uint8
+    hs::Vector{HashCollection{H}}
+end
+
+RH{H}(::Type{CompositeHashCollection{H}}) = Vector{H}
+dimension(c::CompositeHashCollection) = 2*dimension(first(c.hs))
+
+immutable PrecomputedHashes{H}
+    hs::Vector{HashCollection{H}}
+    computed::Vector{Vector{Int32}}
+end
+
+call(c::CompositeHashCollection,v) = vcat(c.hs[c.first](v),c.hs[c.second](v))
+function call(c::CompositeHashCollection,v::PrecomputedHashes)
+    @assert is(c.hs,v.hs)
+    vcat(v.computed[c.first],v.computed[c.second])
+end
+
+function precompute{H}(hs::Vector{HashCollection{H}},q)
+    PrecomputedHashes(hs,[h(q) for h in hs])
+end
+precompute(h::CompositeHashCollection,q) = precompute(h.hs,q)
+precompute(_,q) = q
+
+function createUHashesAM04(d,w,k,L,R,m)
+    family = AM04HashFamily(d,w,R)
+    hs = [ HashCollection{AM04Hash}([rand(family) for _ = 1:(k/2)]) for _ = 1:m ]
+    r = Array(CompositeHashCollection{AM04Hash},div(m*(m-1),2))
+    z = 1
+    for i = 1:m
+        for j = (i+1):m
+            r[z] = CompositeHashCollection{AM04Hash}(i,j,hs)
+            z += 1
+        end
+    end
+    @assert z-1 == length(r)
+    r
 end
 
 # Implements the LSH family given in [AI06]
