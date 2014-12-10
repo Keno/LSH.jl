@@ -42,7 +42,8 @@ export dimension, HashFunction, LSHTable
 
 # ============================= GroupingSet ====================================
 
-import Base: push!
+import Base: push!, getindex, get
+import DataStructures: rehash_item, hashindex
 
 # Groups all elements added to it via `push!(x, k)` into a vector utilizing
 # a hash function as the grouping key. All elements inserted into the vector
@@ -65,15 +66,16 @@ rehash(g::GroupingSet, sz) = DataStructures._rehash(g,g.dict,sz)
 function rehash_item(g::GroupingSet, k, v, sz)
     item = first(v)
     new_key = g.group(item)
-    @assert isequeal(g.dict.derive(k),g.dict.derive(new_key))
-    hashindex(g.dict, new_key, sz)
+    @assert isequal(k,g.dict.derive(new_key))
+    ind = hashindex(g.dict, new_key, sz)
+    ind
 end
 
 function push!{T}(g::GroupingSet{T}, v)
     key = g.group(v)
 
     derived_key = g.dict.derive(key)
-    index = DataStructures.ht_keyindex2(g.dict, key, derived_key)
+    index = DataStructures._ht_keyindex2(g, g.dict, key, derived_key)
 
     if index > 0
         arr = g.dict.vals[index]
@@ -83,6 +85,16 @@ function push!{T}(g::GroupingSet{T}, v)
     end
 
     push!(arr,v)
+end
+
+function getindex(g::GroupingSet, q)
+    key = g.group(q)
+    g.dict[key]
+end
+
+function get(g::GroupingSet, q, default)
+    key = g.group(q)
+    get(g.dict,key,default)
 end
 
 # ========================= LSH hashindex and derive ===========================
@@ -110,7 +122,7 @@ function call{RT}(T::ModPHash{RT},z::Vector{Int32})
     for i in length(z)
         result = (result + (widemul(z[i],T.r[i]) % P)) % P
     end
-    result & RT
+    result % RT
 end
 
 function call{RT}(T::ModPHash{RT},z::Int32)
@@ -125,6 +137,7 @@ import Base: push!
 # The main data structure on which we may perform query
 # contains a collection of k BucketTables
 immutable LSHTable{H,RH,DK,T𝒫,HashF,DeriveF}
+    R::Float64
     tables::Vector{GroupingSet{T𝒫,H,RH,HashF,DeriveF,DK}}
 end
 
@@ -134,7 +147,7 @@ function LSHTable{H,RH,DK,T𝒫,HashF,DeriveF}(
 end
 
 # Given a vector of hashes and a dataset, construct an LSHTable
-function LSHTable{H,T𝒫,RH,DK}(hashes::Vector{H}, datapoints::Vector{T𝒫},
+function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, datapoints::Vector{T𝒫},
         ::Type{RH}, ::Type{DK})
 
     # Set up the tables.
@@ -149,7 +162,7 @@ function LSHTable{H,T𝒫,RH,DK}(hashes::Vector{H}, datapoints::Vector{T𝒫},
         )
         for hash in hashes ]
 
-    T = LSHTable(tables)
+    T = LSHTable(R,tables)
 
     for p in datapoints
         push!(T, p)
@@ -158,11 +171,86 @@ function LSHTable{H,T𝒫,RH,DK}(hashes::Vector{H}, datapoints::Vector{T𝒫},
     T
 end
 
+function LSHTable{H,T𝒫}(R::Float64,hashes::Vector{H}, datapoints::Vector{T𝒫})
+    LSHTable(R,hashes,datapoints,RH(H),Int32)
+end
+
 function push!{H,RH,DK,T𝒫,HashP,DeriveP}(
         T::LSHTable{H,RH,DK,T𝒫,HashP,DeriveP},p::T𝒫)
     for bt in T.tables
         push!(bt,p)
     end
 end
+
+using Distances
+
+function getindex{H,RH,DK,T𝒫,HashP,DeriveP}(
+        T::LSHTable{H,RH,DK,T𝒫,HashP,DeriveP},q::T𝒫)
+    results = ObjectIdDict()
+    tried = Set{Uint64}()
+    for table in T.tables
+        for p in get(table,q,T𝒫[])
+            if object_id(p) ∉ tried
+                if (euclidean(p,q) <= T.R)
+                    results[p] = p
+                end
+                push!(tried,object_id(p))
+            end
+        end
+    end
+    @show length(tried)
+    collect(keys(results))
+end
+
+# =============================== LSH Family ===================================
+using Distributions
+
+import Distributions: Gaussian, Uniform
+import Base: rand
+
+# Implements the LSH family given in [AM04]
+
+immutable AM04HashFamily
+    d::Int
+    w::Float64
+    R::Float64
+end
+
+# Represents an h_{a,b} from [AM04]
+immutable AM04Hash
+    a::Vector{Float64}
+    b::Float64
+    R::Float64
+end
+
+function rand(family::AM04HashFamily)
+    #println("Creating new hash")
+    AM04Hash(
+        rand(Gaussian(0,1.0/family.w),family.d),
+        rand(Uniform(0,1)),
+        family.R
+    )
+end
+
+call(h::AM04Hash,v) = floor(Int32,(dot(h.a,v)/h.R + h.b))
+
+RH(::Type{AM04Hash}) = Int32
+
+# The g_i = {h_{1,i}...h_{1,k}}
+immutable HashCollection{H}
+    hs::Vector{AM04Hash}
+end
+
+RH{H}(::Type{HashCollection{H}}) = Vector{H}
+dimension(c::HashCollection) = length(c.hs)
+
+call(c::HashCollection,v) = [ h(v) for h in c.hs ]
+
+function createHashesAM04(d,w,k,L,R)
+    family = AM04HashFamily(d,w,R)
+    [ HashCollection{AM04Hash}([rand(family) for _ = 1:k]) for _ = 1:L ]
+end
+
+# Implements the LSH family given in [AI06]
 
 end # module
