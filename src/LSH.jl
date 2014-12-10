@@ -49,49 +49,34 @@ import DataStructures: rehash_item, hashindex
 # a hash function as the grouping key. All elements inserted into the vector
 # so far can be retrieved by looking up any item.
 
-immutable GroupingSet{V,GroupingF,RH,HashF,DeriveF,DK} <: AbstractHashDict{V,Vector{V},Unordered}
+immutable PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫} <: AbstractHashDict{V,Vector{V},Unordered}
     group::GroupingF
+    𝒫::Vector{T𝒫}
     dict::MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}
 end
 
-function GroupingSet{V,GroupingF,RH,HashF,DeriveF,DK}(::Type{V},groupF::GroupingF,::Type{RH},hash::HashF,derive::DeriveF,::Type{DK})
-    GroupingSet{V,GroupingF,RH,HashF,DeriveF,DK}(
-        groupF,MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}(hash,derive))
+function PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(
+        𝒫::Vector{T𝒫},::Type{V},groupF::GroupingF,::Type{RH},hash::HashF,derive::DeriveF,::Type{DK})
+    g = PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(
+        groupF,𝒫,MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}(hash,derive))
+    for item = 1:length(𝒫)
+        DataStructures._push!(g,g.dict,g.group(g.𝒫[item])=>V(item))
+    end
+    g
 end
 
-rehash(g::GroupingSet, sz) = DataStructures._rehash(g,g.dict,sz)
+rehash(g::PointGroupingSet, sz) = DataStructures._rehash(g,g.dict,sz)
 
 # We can find out what the hash value with this finger print was by passing
 # any element of the group back throught the hash
-function rehash_item(g::GroupingSet, k, item, sz)
-    new_key = g.group(item)
+function rehash_item(g::PointGroupingSet, k, item, sz)
+    new_key = g.group(g.𝒫[item])
     @assert isequal(k,g.dict.derive(new_key))
     ind = hashindex(g.dict, new_key, sz)
     ind
 end
 
-#=
-function push!{T}(g::GroupingSet{T}, v)
-    key = g.group(v)
-
-    derived_key = g.dict.derive(key)
-    index = DataStructures._ht_keyindex2(g, g.dict, key, derived_key)
-
-    if index > 0
-        arr = g.dict.vals[index]
-    else
-        arr = Array(T,0)
-        DataStructures._setindex!(g.dict, arr, key, derived_key, -index)
-    end
-
-    push!(arr,v)
-end =#
-
-function push!{T}(g::GroupingSet{T}, v)
-    DataStructures._push!(g,g.dict,g.group(v)=>v)
-end
-
-function getindex(g::GroupingSet, q)
+function getindex(g::PointGroupingSet, q)
     key = g.group(q)
     g.dict[key]
 end
@@ -136,24 +121,21 @@ import Base: push!
 
 # The main data structure on which we may perform query
 # contains a collection of k BucketTables
-immutable LSHTable{H,RH,DK,T𝒫,HashF,DeriveF}
+immutable LSHTable{H,RH,DK,V,T𝒫,HashF,DeriveF}
     R::Float64
-    tables::Vector{GroupingSet{T𝒫,H,RH,HashF,DeriveF,DK}}
-end
-
-function LSHTable{H,RH,DK,T𝒫,HashF,DeriveF}(
-        tables::Vector{GroupingSet{T𝒫,H,RH,HashF,DeriveF,DK}})
-    LSHTable{H,RH,DK,T𝒫,HashF,DeriveF}(tables)
+    𝒫::Vector{T𝒫}
+    tables::Vector{PointGroupingSet{V,H,RH,HashF,DeriveF,DK,T𝒫}}
 end
 
 # Given a vector of hashes and a dataset, construct an LSHTable
-function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, datapoints::Vector{T𝒫},
+function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, 𝒫::Vector{T𝒫},
         ::Type{RH}, ::Type{DK})
 
     # Set up the tables.
     tables = [
-        GroupingSet(
-            T𝒫,
+        PointGroupingSet(
+            𝒫,
+            Int32,
             h,
             RH,
             ModPHash{Uint32}(rand(Uint32,dimension(h))), # t_1 in [AM04]
@@ -162,11 +144,9 @@ function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, datapoints::Vect
         )
         for h in hashes ]
 
-    T = LSHTable(R,tables)
+    @show typeof(tables)
 
-    for p in datapoints
-        push!(T, p)
-    end
+    T = LSHTable(R,𝒫,tables)
 
     T
 end
@@ -175,30 +155,24 @@ function LSHTable{H,T𝒫}(R::Float64,hashes::Vector{H}, datapoints::Vector{T�
     LSHTable(R,hashes,datapoints,RH(H),Uint32)
 end
 
-function push!{H,RH,DK,T𝒫,HashP,DeriveP}(
-        T::LSHTable{H,RH,DK,T𝒫,HashP,DeriveP},p::T𝒫)
-    for bt in T.tables
-        push!(bt,p)
-    end
-end
-
 using Distances
 
-function getindex{H,RH,DK,T𝒫,HashP,DeriveP}(
-        T::LSHTable{H,RH,DK,T𝒫,HashP,DeriveP},q::T𝒫)
+function getindex{H,RH,DK,V,T𝒫,HashP,DeriveP}(
+        T::LSHTable{H,RH,DK,V,T𝒫,HashP,DeriveP},q::T𝒫)
     results = ObjectIdDict()
-    tried = Set{Uint64}()
+    tried = falses(length(T.𝒫))
     for table in T.tables
         for p in table[q]
-            if object_id(p) ∉ tried
-                if (euclidean(p,q) <= T.R)
-                    results[p] = p
+            if !tried[p]
+                point = T.𝒫[p]
+                if (euclidean(point,q) <= T.R)
+                    results[point] = p
                 end
-                push!(tried,object_id(p))
+                tried[p] = true
             end
         end
     end
-    @show length(tried)
+    #@show length(tried)
     collect(keys(results))
 end
 
