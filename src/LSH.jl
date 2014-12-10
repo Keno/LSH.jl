@@ -33,7 +33,7 @@ module LSH
 ##
 
 using DataStructures
-import DataStructures: AbstractHashDict, HashDict, Unordered, Ordered
+import DataStructures:  MultiHashDict, AbstractHashDict, HashDict, Unordered, Ordered
 
 
 abstract HashFunction
@@ -51,26 +51,26 @@ import DataStructures: rehash_item, hashindex
 
 immutable GroupingSet{V,GroupingF,RH,HashF,DeriveF,DK} <: AbstractHashDict{V,Vector{V},Unordered}
     group::GroupingF
-    dict::HashDict{RH,Vector{V},Unordered,HashF,DeriveF,DK}
+    dict::MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}
 end
 
 function GroupingSet{V,GroupingF,RH,HashF,DeriveF,DK}(::Type{V},groupF::GroupingF,::Type{RH},hash::HashF,derive::DeriveF,::Type{DK})
     GroupingSet{V,GroupingF,RH,HashF,DeriveF,DK}(
-        groupF,HashDict{RH,Vector{V},Unordered,HashF,DeriveF,DK}(hash,derive))
+        groupF,MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}(hash,derive))
 end
 
 rehash(g::GroupingSet, sz) = DataStructures._rehash(g,g.dict,sz)
 
 # We can find out what the hash value with this finger print was by passing
 # any element of the group back throught the hash
-function rehash_item(g::GroupingSet, k, v, sz)
-    item = first(v)
+function rehash_item(g::GroupingSet, k, item, sz)
     new_key = g.group(item)
     @assert isequal(k,g.dict.derive(new_key))
     ind = hashindex(g.dict, new_key, sz)
     ind
 end
 
+#=
 function push!{T}(g::GroupingSet{T}, v)
     key = g.group(v)
 
@@ -85,16 +85,15 @@ function push!{T}(g::GroupingSet{T}, v)
     end
 
     push!(arr,v)
+end =#
+
+function push!{T}(g::GroupingSet{T}, v)
+    DataStructures._push!(g,g.dict,g.group(v)=>v)
 end
 
 function getindex(g::GroupingSet, q)
     key = g.group(q)
     g.dict[key]
-end
-
-function get(g::GroupingSet, q, default)
-    key = g.group(q)
-    get(g.dict,key,default)
 end
 
 # ========================= LSH hashindex and derive ===========================
@@ -190,7 +189,7 @@ function getindex{H,RH,DK,T𝒫,HashP,DeriveP}(
     results = ObjectIdDict()
     tried = Set{Uint64}()
     for table in T.tables
-        for p in get(table,q,T𝒫[])
+        for p in table[q]
             if object_id(p) ∉ tried
                 if (euclidean(p,q) <= T.R)
                     results[p] = p
