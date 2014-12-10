@@ -101,13 +101,13 @@ end
 
 # In the notation of [AM04], we have hashindex == t_1 and derive == t_2
 
-const P = (uint64(2)^32 - 5)
+const P = UInt32(UInt64(2)^32 - 5)
 
 immutable ModPHash{RT} <: HashFunction
     # TODO: Make NTuple
-    r::Vector{Int32}
+    r::Vector{Uint32}
 end
-dimension(T::ModPHash) = length(r)
+dimension(T::ModPHash) = length(T.r)
 
 function check_length(T::ModPHash, N)
     if length(T.r) != N
@@ -118,9 +118,10 @@ end
 
 function call{RT}(T::ModPHash{RT},z::Vector{Int32})
     check_length(T,length(z))
-    result::Int = 0
-    for i in length(z)
-        result = (result + (widemul(z[i],T.r[i]) % P)) % P
+    result::Uint32 = Uint32(0)
+    for i in 1:length(z)
+        r = z[i]*UInt32(T.r[i])
+        result = ((result + (r % P)) % P) % Uint32
     end
     result % RT
 end
@@ -154,13 +155,13 @@ function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, datapoints::Vect
     tables = [
         GroupingSet(
             T𝒫,
-            hash,
+            h,
             RH,
-            ModPHash{Int}(rand(Int32,dimension(hash))), # t_1 in [AM04]
-            ModPHash{DK}(rand(Int32,dimension(hash))), # t_2 in [AM04]
+            ModPHash{Uint32}(rand(Uint32,dimension(h))), # t_1 in [AM04]
+            ModPHash{DK}(rand(Uint32,dimension(h))), # t_2 in [AM04]
             DK
         )
-        for hash in hashes ]
+        for h in hashes ]
 
     T = LSHTable(R,tables)
 
@@ -172,7 +173,7 @@ function LSHTable{H,T𝒫,RH,DK}(R::Float64, hashes::Vector{H}, datapoints::Vect
 end
 
 function LSHTable{H,T𝒫}(R::Float64,hashes::Vector{H}, datapoints::Vector{T𝒫})
-    LSHTable(R,hashes,datapoints,RH(H),Int32)
+    LSHTable(R,hashes,datapoints,RH(H),Uint32)
 end
 
 function push!{H,RH,DK,T𝒫,HashP,DeriveP}(
