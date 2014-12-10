@@ -60,7 +60,7 @@ function PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(
         𝒫::Vector{T𝒫},::Type{V},groupF::GroupingF,::Type{RH},hash::HashF,derive::DeriveF,::Type{DK})
     g = PointGroupingSet{V,GroupingF,RH,HashF,DeriveF,DK,T𝒫}(
         groupF,𝒫,MultiHashDict{RH,V,Unordered,HashF,DeriveF,DK}(hash,derive))
-    sizehint(g.dict,length(𝒫))
+    sizehint(g.dict,2*length(𝒫))
     g
 end
 
