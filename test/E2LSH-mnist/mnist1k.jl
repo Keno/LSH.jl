@@ -13,7 +13,7 @@ querypoints = readdlm("mnist1k.q")
 # k = 14
 # L = 153
 
-T = LSHTable(0.6,LSH.createHashesAM04(784,4.0,14,153,0.6),
+T = LSHTable(0.6,LSH.createUHashesAM04(784,4.0,14,153,0.6,18),
     Vector{Float64}[ vec(points[i,:]) for i=1:size(points,1) ])
 
 qs = Vector{Float64}[ vec(querypoints[i,:]) for i=1:size(querypoints,1) ]
